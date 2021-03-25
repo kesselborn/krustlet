@@ -4,6 +4,8 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::Status;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+
+
 /// Result of admission hook.
 #[allow(clippy::large_enum_variant)]
 pub enum AdmissionResult<T> {

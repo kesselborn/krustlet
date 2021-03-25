@@ -8,6 +8,7 @@ use k8s_openapi::Metadata;
 use crate::object::{ObjectState, ObjectStatus};
 use crate::state::{SharedState, State};
 use crate::Manifest;
+use k8s_openapi::api::core::v1::Secret;
 
 #[async_trait::async_trait]
 /// Interface for creating an operator.
@@ -59,6 +60,11 @@ pub trait Operator: 'static + Sync + Send {
         &self,
         manifest: Self::Manifest,
     ) -> crate::admission::AdmissionResult<Self::Manifest>;
+
+    #[cfg(feature = "admission-webhook")]
+    /// Returns a secreta that contains the certificate and the private key for the
+    /// webhook admission controller
+    async fn admission_hook_tls_secret(&self, manifest: Self::Manifest) -> anyhow::Result<Secret>;
 
     /// Called before the state machine is run.
     async fn deregistration_hook(
