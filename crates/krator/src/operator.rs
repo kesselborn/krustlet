@@ -5,10 +5,11 @@ use std::fmt::Debug;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use k8s_openapi::Metadata;
 
+use crate::admission::AdmissionTLS;
 use crate::object::{ObjectState, ObjectStatus};
 use crate::state::{SharedState, State};
 use crate::Manifest;
-use k8s_openapi::api::core::v1::Secret;
+
 
 #[async_trait::async_trait]
 /// Interface for creating an operator.
@@ -55,16 +56,18 @@ pub trait Operator: 'static + Sync + Send {
     }
 
     #[cfg(feature = "admission-webhook")]
-    /// Invoked when object is created or modified. Can mutate the and / or deny the request.
+    /// Invoked when object is created or modified. Can mutate and / or allow and deny the request.
     async fn admission_hook(
         &self,
         manifest: Self::Manifest,
     ) -> crate::admission::AdmissionResult<Self::Manifest>;
 
     #[cfg(feature = "admission-webhook")]
-    /// Returns a secreta that contains the certificate and the private key for the
-    /// webhook admission controller
-    async fn admission_hook_tls_secret(&self, manifest: Self::Manifest) -> anyhow::Result<Secret>;
+    /// Gets called by the operator if the admission-webhook feature is enabled. The function should
+    /// return a certificate and a private key that can be used by the admission controller.
+    /// Usually, the key and the certificate will be read from a Kubernetes secret -- use [AdmissionTLS::from()]
+    /// to convert the Kubernetes secret an [AdmissionTLS]
+    async fn admission_hook_tls(&self) -> anyhow::Result<AdmissionTLS>;
 
     /// Called before the state machine is run.
     async fn deregistration_hook(

@@ -86,4 +86,3 @@ fn generate_impl(transitions: Transitions, generics: Generics, name: Ident) -> T
 
     token_stream
 }
-

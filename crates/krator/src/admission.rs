@@ -1,12 +1,16 @@
 //! Basic implementation of Kubernetes Admission API
 use crate::Operator;
 use anyhow::{bail, ensure, Context};
-use k8s_openapi::api::{
-    admissionregistration::v1::MutatingWebhookConfiguration,
-    core::v1::{Secret, Service},
-};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Status;
-use kube::Client;
+use k8s_openapi::{
+    api::{
+        admissionregistration::v1::MutatingWebhookConfiguration,
+        core::v1::{Secret, Service},
+    },
+    apimachinery::pkg::apis::meta::v1::OwnerReference,
+    Metadata, Resource,
+};
+use kube::{api::ObjectMeta, Client};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
@@ -35,9 +39,11 @@ use std::sync::Arc;
 ///     pub owner: String,
 /// }
 ///
-///MyCr::
+/// let namespace = "default";
+/// let (service, secret, config) = MyCr::::admission_webhook_resources(namespace);
+/// let webhook_resources = WebhookResources(service, secret, config);
+/// println!("{}", webhook_resources);
 /// ```
-
 pub struct WebhookResources(
     pub k8s_openapi::api::core::v1::Service,
     pub k8s_openapi::api::core::v1::Secret,
@@ -58,6 +64,40 @@ impl WebhookResources {
     /// returns the webhook_config
     pub fn webhook_config(&self) -> &MutatingWebhookConfiguration {
         &self.2
+    }
+
+    /// applies the webhook resources and makes them owned by the object
+    /// that the `owner` resource belongs to -- this way the resource will get deleted
+    /// automatically, when the owner gets deleted
+    pub async fn apply_owned<T>(&self, client: Client, owner: &T) -> anyhow::Result<()>
+    where
+        T: Resource + Metadata<Ty = ObjectMeta>,
+    {
+        let api_version = k8s_openapi::api_version(owner);
+        let kind = k8s_openapi::kind(owner);
+        let metadata = owner.metadata();
+
+        let owner_references = Some(vec![OwnerReference {
+            api_version: api_version.to_string(),
+            controller: Some(true),
+            kind: kind.to_string(),
+            name: metadata.name.as_ref().unwrap().to_string(),
+            uid: metadata.uid.as_ref().unwrap().to_string(),
+            ..Default::default()
+        }]);
+
+        let mut secret = self.secret().to_owned();
+        secret.metadata.owner_references = owner_references.clone();
+
+        let mut service = self.service().to_owned();
+        service.metadata.owner_references = owner_references.clone();
+
+        let mut webhook_config = self.webhook_config().to_owned();
+        webhook_config.metadata.owner_references = owner_references;
+
+        WebhookResources(service, secret, webhook_config)
+            .apply(client)
+            .await
     }
 
     /// applies the webhook resources
@@ -109,10 +149,7 @@ impl WebhookResources {
 
 impl Display for WebhookResources {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        let service = self.0.clone();
-        let secret = &self.1;
-        let admission_webhook_configuration = &self.2;
-
+        let service = self.service();
         write!(
             f,
             r#"
@@ -134,10 +171,10 @@ impl Display for WebhookResources {
 {}
 "#,
             service.spec.clone().unwrap().selector.unwrap(),
-            service.metadata.clone().namespace.unwrap(),
-            serde_yaml::to_string(&service).unwrap(),
-            serde_yaml::to_string(&secret).unwrap(),
-            serde_yaml::to_string(&admission_webhook_configuration).unwrap()
+            service.metadata.namespace.as_ref().unwrap(),
+            serde_yaml::to_string(self.service()).unwrap(),
+            serde_yaml::to_string(self.secret()).unwrap(),
+            serde_yaml::to_string(self.webhook_config()).unwrap()
         )
     }
 }
@@ -213,7 +250,7 @@ impl AdmissionTLS {
     /// Secrets that have secrets set via `data` or `string_data`
     pub fn from(s: &Secret) -> anyhow::Result<Self> {
         ensure!(
-            s.type_.clone().unwrap() == "tls",
+            s.type_.as_ref().unwrap() == "tls",
             "only tls secrets can be converted to AdmisstionTLS struct"
         );
 
@@ -221,11 +258,10 @@ impl AdmissionTLS {
         let error_msg = |key: &str| {
             format!(
                 "secret data {}/{} does not contain key {}",
-                metadata.name.clone().unwrap_or("".to_string()),
-                metadata.namespace.clone().unwrap_or("".to_string()),
+                metadata.name.as_ref().unwrap_or(&"".to_string()),
+                metadata.namespace.as_ref().unwrap_or(&"".to_string()),
                 key
             )
-            .clone()
         };
 
         const TLS_CRT: &'static str = "tls.crt";
@@ -253,8 +289,8 @@ impl AdmissionTLS {
 
         bail!(
             "secret {}/{} does not contain any data",
-            metadata.name.clone().unwrap_or("".to_string()),
-            metadata.namespace.clone().unwrap_or("".to_string())
+            metadata.name.as_ref().unwrap_or(&"".to_string()),
+            metadata.namespace.as_ref().unwrap_or(&"".to_string())
         )
     }
 }

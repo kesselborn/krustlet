@@ -1,4 +1,6 @@
 //! Exposes an API for creating state-machine-based Kubernetes Operators.
+//!
+//! See [krator_derive::AdmissionWebhook] for some useful macros when planning to provide an admission webhook
 
 #![deny(missing_docs)]
 
