@@ -1,19 +1,46 @@
 {
   "version": "0.2.0",
-  "configurations": [{
-    "type": "lldb",
-    "request": "launch",
-    "name": "Kubelet",
-    "args": [],
-    "program": "${workspaceFolder}/target/debug/krustlet",
-    "windows": {
-      "program": "${workspaceFolder}/target/debug/krustlet.exe"
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Kubelet",
+      "args": [],
+      "program": "${workspaceFolder}/target/debug/krustlet",
+      "windows": {
+        "program": "${workspaceFolder}/target/debug/krustlet.exe"
+      },
+      "cwd": "${workspaceFolder}",
+      "stopOnEntry": false,
+      "sourceLanguages": ["rust"],
+      "sourceMap": {
+        "/rustc/*": "${env:HOME}/.rustup/toolchains/stable-x86_64-apple-darwin/lib/rustlib/src/rust"
+      }
     },
-    "cwd": "${workspaceFolder}",
-    "stopOnEntry": false,
-    "sourceLanguages": ["rust"],
-    "sourceMap": {
-      "/rustc/*": "${env:HOME}/.rustup/toolchains/stable-x86_64-apple-darwin/lib/rustlib/src/rust"
+    {
+      "type": "lldb",
+      "preRunCommands": ["cd", "crates/krator"],
+      "request": "launch",
+      "cwd": "${workspaceFolder}/crates/krator",
+      "name": "moose example",
+      "cargo": {
+        "args": ["build", "--example=moose", "--features=derive"]
+      }
+    },
+    {
+      "type": "lldb",
+      "preRunCommands": ["cd", "crates/krator"],
+      "request": "launch",
+      "cwd": "${workspaceFolder}/crates/krator",
+      "name": "moose w/ admission webhook example ",
+      "cargo": {
+        "args": [
+          "build",
+          "--example=moose",
+          "--no-default-features",
+          "--features=derive,admission-webhook,kube/native-tls"
+        ]
+      }
     }
-  }]
+  ]
 }

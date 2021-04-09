@@ -1571,6 +1571,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.13.0",
+ "bytes 1.0.1",
  "chrono",
  "futures",
  "json-patch",
@@ -1580,6 +1582,7 @@ dependencies = [
  "kube-derive",
  "kube-runtime",
  "rand 0.8.3",
+ "rcgen",
  "schemars",
  "serde",
  "serde_json",

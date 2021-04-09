@@ -1,8 +1,13 @@
-use k8s_openapi::Metadata;
-use krator::{
-    Manifest, ObjectState, ObjectStatus, Operator, OperatorRuntime, State, Transition, TransitionTo,
+use k8s_openapi::{
+    api::core::v1::Secret,
+    apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition, Metadata,
 };
-use kube::api::ListParams;
+use krator::{
+    admission, Manifest, ObjectState, ObjectStatus, Operator, OperatorRuntime, State, Transition,
+    TransitionTo,
+};
+
+use kube::api::{ListParams, Meta, PostParams};
 use kube_derive::CustomResource;
 use rand::seq::IteratorRandom;
 use rand::Rng;
@@ -13,6 +18,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::info;
 
+#[cfg(not(feature = "admission-webhook"))]
 #[derive(CustomResource, Debug, Serialize, Deserialize, Clone, Default, JsonSchema)]
 #[kube(
     group = "animals.com",
@@ -28,6 +34,26 @@ struct MooseSpec {
     antlers: bool,
 }
 
+#[cfg(feature = "admission-webhook")]
+use krator_derive::AdmissionWebhook;
+
+#[cfg(feature = "admission-webhook")]
+#[derive(
+    AdmissionWebhook, CustomResource, Debug, Serialize, Deserialize, Clone, Default, JsonSchema,
+)]
+#[kube(
+    group = "animals.com",
+    version = "v1",
+    kind = "Moose",
+    derive = "Default",
+    status = "MooseStatus",
+    namespaced
+)]
+struct MooseSpec {
+    height: f64,
+    weight: f64,
+    antlers: bool,
+}
 #[derive(Debug, Serialize, Deserialize, Clone, JsonSchema)]
 enum MoosePhase {
     Asleep,
@@ -273,6 +299,7 @@ impl State<MooseState> for Released {
 
 struct SharedMooseState {
     friends: HashMap<String, HashSet<String>>,
+    client: kube::Client,
 }
 
 struct MooseTracker {
@@ -280,9 +307,10 @@ struct MooseTracker {
 }
 
 impl MooseTracker {
-    fn new() -> Self {
+    fn new(client: &kube::Client) -> Self {
         let shared = Arc::new(RwLock::new(SharedMooseState {
             friends: HashMap::new(),
+            client: client.to_owned(),
         }));
         MooseTracker { shared }
     }
@@ -314,14 +342,34 @@ impl Operator for MooseTracker {
     #[cfg(feature = "admission-webhook")]
     async fn admission_hook(
         &self,
-        manifest: Self::Manifest,
+        admission_request: &admission::AdmissionRequest<Self::Manifest>,
     ) -> krator::admission::AdmissionResult<Self::Manifest> {
+        if admission_request.operation != "CREATE" {
+            info!(
+                "only handling CREATE admission requests, got: {} ... allowing request",
+                admission_request.operation
+            );
+            return krator::admission::AdmissionResult::Allow(None);
+        }
+
+        let manifest = admission_request.object.as_ref().unwrap();
         use k8s_openapi::apimachinery::pkg::apis::meta::v1::Status;
+
         // All moose names start with "M"
         let name = manifest.metadata().name.clone().unwrap();
         info!("Processing admission hook for moose named {}", name);
         match name.chars().next() {
-            Some('m') | Some('M') => krator::admission::AdmissionResult::Allow(manifest),
+            Some('m') | Some('M') => {
+                let mut manifest = manifest.to_owned();
+                let mut annotations = manifest
+                    .metadata
+                    .annotations
+                    .unwrap_or(std::collections::BTreeMap::new());
+                annotations.insert("checked".to_string(), "true".to_string());
+                manifest.metadata.annotations = Some(annotations);
+
+                krator::admission::AdmissionResult::Allow(Some(manifest.to_owned()))
+            }
             _ => krator::admission::AdmissionResult::Deny(Status {
                 code: Some(400),
                 message: Some("Mooses may only have names starting with 'M'.".to_string()),
@@ -330,6 +378,56 @@ impl Operator for MooseTracker {
             }),
         }
     }
+
+    #[cfg(feature = "admission-webhook")]
+    async fn admission_hook_tls(&self) -> anyhow::Result<krator::admission::AdmissionTLS> {
+        let client = self.shared.read().await.client.clone();
+        let secret_name = Moose::admission_webhook_secret_name();
+
+        let secret = kube::Api::<Secret>::namespaced(client, "default")
+            .get(&secret_name)
+            .await?;
+
+        Ok(admission::AdmissionTLS::from(&secret)?)
+    }
+}
+
+async fn apply_crd(client: &kube::Client) -> anyhow::Result<CustomResourceDefinition> {
+    info!("installing moose crd");
+    let mut crd = Moose::crd();
+    let crd_name = crd.metadata.name.as_ref().unwrap();
+
+    let api = kube::Api::<CustomResourceDefinition>::all(client.to_owned());
+
+    let created_crd;
+    if let Ok(existing_crd) = api.get(crd_name).await {
+        crd.metadata.resource_version = Some(existing_crd.resource_ver().unwrap());
+        created_crd = api.replace(&crd_name, &PostParams::default(), &crd).await?;
+    } else {
+        created_crd = api.create(&PostParams::default(), &crd).await?;
+    }
+
+    Ok(created_crd)
+}
+
+#[cfg(feature = "admission-webhook")]
+async fn setup_cluster(client: &kube::Client) -> anyhow::Result<()> {
+    let crd = apply_crd(&client).await?;
+
+    info!("installing moose webhook resources");
+    let awh_resources =
+        admission::WebhookResources::from(Moose::admission_webhook_resources("default"));
+    awh_resources.apply_owned(&client, &crd).await?;
+
+    Ok(())
+}
+
+#[cfg(not(feature = "admission-webhook"))]
+async fn setup_cluster(config: &kube::Config) -> anyhow::Result<()> {
+    let client = kube::Client::new(config.to_owned());
+    let _ = apply_crd(&client).await;
+
+    Ok(())
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -338,14 +436,18 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
     let kubeconfig = kube::Config::infer().await?;
-    let tracker = MooseTracker::new();
+    let client = kube::Client::new(kubeconfig.to_owned());
+    let tracker = MooseTracker::new(&client);
 
     info!("crd:\n{}", serde_yaml::to_string(&Moose::crd()).unwrap());
+
+    setup_cluster(&client).await?;
 
     // Only track mooses in Glacier NP
     let params = ListParams::default().labels("nps.gov/park=glacier");
 
     let mut runtime = OperatorRuntime::new(&kubeconfig, tracker, Some(params));
+    info!("starting mooses operator");
     runtime.start().await;
     Ok(())
 }

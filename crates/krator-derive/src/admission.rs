@@ -147,11 +147,14 @@ impl CustomDerive for CustomResourceInfos {
                 /// can be used for the admission webhook service
                 pub fn admission_webhook_secret(namespace: &str) -> k8s_openapi::api::core::v1::Secret {
                     let crd = #name_identifier::crd();
-                    let service_name = #name_identifier::admission_webhook_secret_name();
+                    let service_name = #name_identifier::admission_webhook_service_name();
 
                     let subject_alt_names = vec![
                         service_name.clone(),
                         format!("{}.{}", &service_name, namespace).to_string(),
+                        format!("{}.{}.svc", &service_name, namespace).to_string(),
+                        format!("{}.{}.svc.cluster", &service_name, namespace).to_string(),
+                        format!("{}.{}.svc.cluster.local", &service_name, namespace).to_string(),
                     ];
                     let cert = rcgen::generate_simple_self_signed(subject_alt_names).unwrap();
 
@@ -182,7 +185,7 @@ impl CustomDerive for CustomResourceInfos {
 
                     k8s_openapi::api::core::v1::Service {
                         metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
-                            name: Some(#name_identifier::admission_webhook_service_app_selector()),
+                            name: Some(#name_identifier::admission_webhook_service_name()),
                             namespace: Some(namespace.to_string()),
                             ..Default::default()
                         },
@@ -190,7 +193,6 @@ impl CustomDerive for CustomResourceInfos {
                             selector: Some(selector),
                             ports: Some(vec![k8s_openapi::api::core::v1::ServicePort{
                                 protocol: Some("TCP".to_string()),
-                                name: Some("https".to_string()),
                                 port: 443,
                                 target_port: Some(k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::Int(8443)),
                                 ..Default::default()
@@ -205,6 +207,7 @@ impl CustomDerive for CustomResourceInfos {
                 /// Creates a MutatingWebhookConfiguration using the certificate from the given service and the service
                 /// of the given service as configuration
                 pub fn admission_webhook_configuration(service: k8s_openapi::api::core::v1::Service, secret: k8s_openapi::api::core::v1::Secret) -> anyhow::Result<k8s_openapi::api::admissionregistration::v1::MutatingWebhookConfiguration> {
+                   use anyhow::Context;
                    let crd = #name_identifier::crd();
 
                    let webhook_name = #name_identifier::admission_webhook_configuration_name() ;
@@ -235,9 +238,10 @@ impl CustomDerive for CustomResourceInfos {
                            name: Some(webhook_name.clone()),
                            ..Default::default()
                        },
-                       webhooks: Some(vec![k8s_openapi::api::admissionregistration::v1::MutatingWebhook{
+                       webhooks: Some(vec![
+                        k8s_openapi::api::admissionregistration::v1::MutatingWebhook{
                            admission_review_versions: versions.clone(),
-                           name: webhook_name.clone(),
+                           name: format!("{}", webhook_name.clone()),
                            side_effects: "None".to_string(),
                            rules: Some(vec![k8s_openapi::api::admissionregistration::v1::RuleWithOperations{
                                api_groups: Some(vec![crd.spec.group]),
@@ -245,18 +249,20 @@ impl CustomDerive for CustomResourceInfos {
                                operations: Some(vec!["*".to_string()]),
                                resources: Some(vec![crd.spec.names.plural]),
                                scope: Some(crd.spec.scope)
-                           }]),
+                            }]),
                            client_config: k8s_openapi::api::admissionregistration::v1::WebhookClientConfig{
                                ca_bundle: Some(ca_bundle),
                                service: Some(k8s_openapi::api::admissionregistration::v1::ServiceReference{
                                    name: service.metadata.name.unwrap(),
                                    namespace: service.metadata.namespace.unwrap(),
+                                   path: Some("/".to_string()),
                                    ..Default::default()
                                }),
                                url: None
                            },
                            ..Default::default()
-                       }])
+                        }
+                      ])
                    })
                 }
             }

@@ -5,11 +5,12 @@ use std::fmt::Debug;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use k8s_openapi::Metadata;
 
-use crate::admission::AdmissionTLS;
 use crate::object::{ObjectState, ObjectStatus};
 use crate::state::{SharedState, State};
 use crate::Manifest;
 
+#[cfg(feature = "admission-webhook")]
+use crate::admission::AdmissionTLS;
 
 #[async_trait::async_trait]
 /// Interface for creating an operator.
@@ -59,7 +60,7 @@ pub trait Operator: 'static + Sync + Send {
     /// Invoked when object is created or modified. Can mutate and / or allow and deny the request.
     async fn admission_hook(
         &self,
-        manifest: Self::Manifest,
+        admission_request: &crate::admission::AdmissionRequest<Self::Manifest>,
     ) -> crate::admission::AdmissionResult<Self::Manifest>;
 
     #[cfg(feature = "admission-webhook")]
